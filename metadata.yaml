@@ -1,7 +1,11 @@
 name: astrbot_plugin_gengwiki
 display_name: 梗Wiki
 desc: 查询梗Wiki 的热梗和表情包，使用和切换梗Wiki 人设
-version: v0.2.0
+version: 0.2.0
 author: Niox1337
 repo: https://github.com/Niox1337/astrbot_plugin_gengwiki
 astrbot_version: ">=4.24,<5"
+tags:
+  - 梗
+  - 表情包
+  - 人设
