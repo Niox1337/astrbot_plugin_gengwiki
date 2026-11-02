@@ -1,0 +1,25 @@
+{
+  "api_key": {
+    "description": "梗Wiki API Key",
+    "hint": "在 https://gengwiki.niox.lol/me 创建",
+    "type": "string",
+    "secret": true
+  },
+  "join_chance_named": {
+    "description": "群友提到梗时插话的概率",
+    "hint": "0 到 1，0 表示不插话",
+    "type": "float",
+    "default": 0.5
+  },
+  "join_chance_any": {
+    "description": "其他群消息插话的概率",
+    "hint": "0 到 1，每次插话都会调用一次模型",
+    "type": "float",
+    "default": 0.02
+  },
+  "join_cooldown": {
+    "description": "同一个群两次插话的最短间隔（秒）",
+    "type": "int",
+    "default": 300
+  }
+}
