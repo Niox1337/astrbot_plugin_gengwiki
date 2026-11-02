@@ -1,29 +1,44 @@
 import asyncio
+import hashlib
 import random
 import time
 
-from gengwiki import GengWiki, GengWikiError
+from gengwiki import ForbiddenError, GengWiki, GengWikiError
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
+from astrbot.core.star.filter.command import GreedyStr
 
 # The model answers this when it has nothing good to say, and the reply is dropped.
 SKIP = "[不接话]"
+UNREADABLE = "读取失败"
 
 
 class GengWikiPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.client = GengWiki(config.get("api_key", ""))
+        keys = dict.fromkeys(k.strip() for k in config.get("api_keys", []) if k.strip()) or [""]
+        # A key binds one persona for life, so switching persona means switching key.
+        # Hashed so a session keeps its pick when the list is reordered, and the keys stay out of the plugin's database.
+        self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k) for k in keys}
+        self.chosen: dict[str, str] = {}
         self.last_joined: dict[str, float] = {}
 
-    def _call(self, name: str, **args):
+    async def initialize(self):
+        self.chosen = await self.get_kv_data("chosen", {}) or {}
+
+    def _client(self, event: AstrMessageEvent) -> GengWiki:
+        """The key this session picked, or the first one in the config."""
+        picked = self.clients.get(self.chosen.get(event.unified_msg_origin))
+        return picked or next(iter(self.clients.values()))
+
+    def _call(self, event: AstrMessageEvent, name: str, **args):
         # The SDK blocks, so it must not run on AstrBot's event loop
-        return asyncio.to_thread(self.client.tools.call, name, args)
+        return asyncio.to_thread(self._client(event).tools.call, name, args)
 
     async def _quick(self, fn, *args):
         """For the steps every message passes through. A slow or broken wiki must not hold up the chat, the thread still fills the cache."""
@@ -33,10 +48,43 @@ class GengWikiPlugin(Star):
             logger.warning(f"gengwiki skipped: {e!r}")
             return None
 
+    async def _label(self, client: GengWiki) -> str:
+        try:
+            persona = await asyncio.wait_for(asyncio.to_thread(client.persona), 10)
+        except ForbiddenError:
+            return f"{UNREADABLE}，这个 Key 没有勾选 persona:read"
+        except (GengWikiError, asyncio.TimeoutError):
+            return f"{UNREADABLE}，请检查 Key 或稍后再试"
+        return persona.title if persona else "无人设"
+
+    @filter.command("人设")
+    async def switch_persona(self, event: AstrMessageEvent, name: GreedyStr):
+        """查看或切换梗Wiki 人设。不带参数时列出可选人设，带序号或名字时切换当前会话的人设"""
+        name = name.strip()
+        labels = await asyncio.gather(*map(self._label, self.clients.values()))
+        if not name:
+            current = self._client(event)
+            rows = [f"{i}. {label}{'（当前）' if client is current else ''}" for i, (label, client) in enumerate(zip(labels, self.clients.values()), 1)]
+            yield event.plain_result("\n".join(["可选人设：", *rows, "发送 /人设 序号或名字 切换"]))
+            return
+        index = int(name) - 1 if name.isdecimal() else next((i for i, label in enumerate(labels) if name in label), -1)
+        if not 0 <= index < len(labels):
+            yield event.plain_result("没有这个人设，发送 /人设 查看可选人设")
+        elif labels[index].startswith(UNREADABLE):
+            yield event.plain_result(labels[index])
+        else:
+            self.chosen[event.unified_msg_origin] = list(self.clients)[index]
+            await self.put_kv_data("chosen", self.chosen)
+            yield event.plain_result(f"已切换到 {labels[index]}。如果还带着之前的语气，发送 /reset 清空对话")
+
     @filter.on_llm_request()
-    async def add_memes(self, event: AstrMessageEvent, req: ProviderRequest):
-        """Every reply the model writes gets memes to pick from, and it uses one only where it really fits."""
-        prompt = await self._quick(self.client.meme_prompt, event.get_message_str())
+    async def prepare_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        """Every reply follows the session's persona, and gets memes to pick from that it uses only where one really fits."""
+        client = self._client(event)
+        persona, prompt = await asyncio.gather(self._quick(client.persona), self._quick(client.meme_prompt, event.get_message_str()))
+        if persona and persona.prompt:
+            # AstrBot has added its own persona by now, so this one comes last and says it wins
+            req.system_prompt = f"{req.system_prompt or ''}\n# 梗Wiki 人设\n\n以下人设优先于前面的人设设定。\n\n{persona.prompt}\n"
         if prompt:
             # Changes every turn, so it stays out of the system prompt and the saved history
             req.extra_user_content_parts.append(TextPart(text=prompt).mark_as_temp())
@@ -50,7 +98,7 @@ class GengWikiPlugin(Star):
         # A message that wakes the bot gets a normal reply anyway
         if event.is_at_or_wake_command or not text or time.time() - self.last_joined.get(origin, 0) < cooldown:
             return
-        named = await self._quick(self.client.match_memes, text)
+        named = await self._quick(self._client(event).match_memes, text)
         chance = self.config.get("join_chance_named", 0.5) if named else self.config.get("join_chance_any", 0.02)
         if random.random() >= chance:
             return
@@ -80,7 +128,7 @@ class GengWikiPlugin(Star):
         Args:
             q(string): 梗的关键词、别名、拼音缩写，或者一个场景，比如加班
         """
-        return await self._call("search_memes", q=q)
+        return await self._call(event, "search_memes", q=q)
 
     @filter.llm_tool(name="get_meme")
     async def get_meme(self, event: AstrMessageEvent, slug: str):
@@ -89,7 +137,7 @@ class GengWikiPlugin(Star):
         Args:
             slug(string): search_memes 返回的 slug，也可以是梗的准确名称
         """
-        return await self._call("get_meme", slug=slug)
+        return await self._call(event, "get_meme", slug=slug)
 
     @filter.llm_tool(name="trending_memes")
     async def trending_memes(self, event: AstrMessageEvent, tag: str = ""):
@@ -98,7 +146,7 @@ class GengWikiPlugin(Star):
         Args:
             tag(string): 分类标签，留空为全站榜
         """
-        return await self._call("trending_memes", tag=tag)
+        return await self._call(event, "trending_memes", tag=tag)
 
     @filter.llm_tool(name="search_stickers")
     async def search_stickers(self, event: AstrMessageEvent, q: str):
@@ -107,7 +155,7 @@ class GengWikiPlugin(Star):
         Args:
             q(string): 想表达的情绪或内容
         """
-        return await self._call("search_stickers", q=q)
+        return await self._call(event, "search_stickers", q=q)
 
     @filter.llm_tool(name="send_sticker")
     async def send_sticker(self, event: AstrMessageEvent, url: str):
@@ -117,10 +165,11 @@ class GengWikiPlugin(Star):
             url(string): search_stickers 返回的图片链接
         """
         # Only our own images, a prompt injection must not make the bot post any URL
-        if not url.startswith(f"{self.client.base_url}/v1/stickers/"):
+        if not url.startswith(f"{self._client(event).base_url}/v1/stickers/"):
             yield event.plain_result("只能发送梗Wiki 的表情")
             return
         yield event.image_result(url)
 
     async def terminate(self):
-        self.client.close()
+        for client in self.clients.values():
+            client.close()

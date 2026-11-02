@@ -1,8 +1,9 @@
 {
-  "api_key": {
+  "api_keys": {
     "description": "梗Wiki API Key",
-    "hint": "在 https://gengwiki.niox.lol/me 创建",
-    "type": "string",
+    "hint": "在 https://gengwiki.niox.lol/me 创建，一个 Key 对应一个人设。可以填多个，第一个是默认人设，聊天时发送 /人设 切换",
+    "type": "list",
+    "items": { "type": "string" },
     "secret": true
   },
   "join_chance_named": {
