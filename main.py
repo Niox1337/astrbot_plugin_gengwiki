@@ -3,7 +3,7 @@ import hashlib
 import random
 import time
 
-from gengwiki import ForbiddenError, GengWiki, GengWikiError
+from gengwiki import ForbiddenError, GengWiki, GengWikiError, NotFoundError
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
@@ -15,6 +15,8 @@ from astrbot.core.star.filter.command import GreedyStr
 # The model answers this when it has nothing good to say, and the reply is dropped.
 SKIP = "[不接话]"
 UNREADABLE = "读取失败"
+# The options of quote_mode in _conf_schema.json
+QUOTE_MODES = {"不使用": "off", "引用": "cite", "直接使用": "use", "引用和使用": "both"}
 # AstrBot ends the turn when a tool sends the image itself, and it sends text written alongside a tool call first.
 SEND_RULE = "发送时调用 send_sticker，传入下面的一条说明。要说的话必须写在同一条回复里，和这次调用一起发出，调用之后这一轮就结束了，不能再说话。"
 
@@ -26,7 +28,8 @@ class GengWikiPlugin(Star):
         keys = dict.fromkeys(k.strip() for k in config.get("api_keys", []) if k.strip()) or [""]
         # A key binds one persona for life, so switching persona means switching key.
         # Hashed so a session keeps its pick when the list is reordered, and the keys stay out of the plugin's database.
-        self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k) for k in keys}
+        self.quotes = QUOTE_MODES.get(config.get("quote_mode", "引用"), "cite")
+        self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, quotes=self.quotes) for k in keys}
         self.chosen: dict[str, str] = {}
         self.last_joined: dict[str, float] = {}
 
@@ -38,9 +41,9 @@ class GengWikiPlugin(Star):
         picked = self.clients.get(self.chosen.get(event.unified_msg_origin))
         return picked or next(iter(self.clients.values()))
 
-    def _call(self, event: AstrMessageEvent, name: str, **args):
+    def _call(self, event: AstrMessageEvent, tool: str, **args):
         # The SDK blocks, so it must not run on AstrBot's event loop
-        return asyncio.to_thread(self._client(event).tools.call, name, args)
+        return asyncio.to_thread(self._client(event).tools.call, tool, args)
 
     async def _quick(self, fn, *args):
         """For the steps every message passes through. A slow or broken wiki must not hold up the chat, the thread still fills the cache."""
@@ -78,6 +81,32 @@ class GengWikiPlugin(Star):
             self.chosen[event.unified_msg_origin] = list(self.clients)[index]
             await self.put_kv_data("chosen", self.chosen)
             yield event.plain_result(f"已切换到 {labels[index]}。如果还带着之前的语气，发送 /reset 清空对话")
+
+    @filter.command("语录")
+    async def quote(self, event: AstrMessageEvent, name: GreedyStr):
+        """随机发一句语录。带名字时发这个人物的，不带时从这个 Key 关联的人物里抽"""
+        if self.quotes == "off":
+            yield event.plain_result("语录没有开启，可以在插件配置的 quote_mode 里打开")
+            return
+        client = self._client(event)
+        name = name.strip()
+        try:
+            found = [await asyncio.wait_for(asyncio.to_thread(client.person, name), 10)] if name else await asyncio.wait_for(asyncio.to_thread(client.linked_people), 10)
+        except NotFoundError:
+            yield event.plain_result(f"没有找到 {name}")
+            return
+        except ForbiddenError:
+            yield event.plain_result("这个 Key 没有勾选 people:read")
+            return
+        except (GengWikiError, asyncio.TimeoutError):
+            yield event.plain_result("读取失败，请稍后再试")
+            return
+        said = [(p.name, q) for p in found for q in p.quotes]
+        if said:
+            who, line = random.choice(said)
+            yield event.plain_result(f"{line}\n\n{who}")
+        else:
+            yield event.plain_result(f"{name} 还没有收录语录" if name else "这个 Key 关联的人物还没有语录，发送 /语录 名字 试试")
 
     @filter.on_llm_request()
     async def prepare_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -153,6 +182,24 @@ class GengWikiPlugin(Star):
             tag(string): 分类标签，留空为全站榜
         """
         return await self._call(event, "trending_memes", tag=tag)
+
+    @filter.llm_tool(name="search_people")
+    async def search_people(self, event: AstrMessageEvent, q: str):
+        """搜索梗Wiki 收录的人物。问到某个人是谁，或者想知道一句话是谁说的时调用。
+
+        Args:
+            q(string): 名字、别名、标签，或者语录里的词
+        """
+        return await self._call(event, "search_people", q=q)
+
+    @filter.llm_tool(name="get_person")
+    async def get_person(self, event: AstrMessageEvent, name: str):
+        """查看一个人物的完整简介、语录和提到这个人物的梗。
+
+        Args:
+            name(string): 准确的名字或别名
+        """
+        return await self._call(event, "get_person", name=name)
 
     @filter.llm_tool(name="send_sticker")
     async def send_sticker(self, event: AstrMessageEvent, caption: str):

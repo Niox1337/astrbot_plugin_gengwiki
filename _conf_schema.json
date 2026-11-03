@@ -6,6 +6,13 @@
     "items": { "type": "string" },
     "secret": true
   },
+  "quote_mode": {
+    "description": "人物语录的用法",
+    "hint": "不使用，模型不会用语录，/语录 指令也关闭。引用，照抄原话并说明是谁说的。直接使用，当成自己的话说出来。引用和使用，两种都可以",
+    "type": "string",
+    "options": ["不使用", "引用", "直接使用", "引用和使用"],
+    "default": "引用"
+  },
   "join_chance_named": {
     "description": "群友提到梗时插话的概率",
     "hint": "0 到 1，0 表示不插话",
