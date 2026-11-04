@@ -21,10 +21,11 @@ QUOTE_MODES = {"不使用": "off", "引用": "cite", "直接使用": "use", "引
 SEND_RULE = "发送时调用 send_sticker，传入表情列表里的一条说明。要说的话必须写在同一条回复里，和这次调用一起发出，调用之后这一轮就结束了，不能再说话。"
 
 
-def reload(client: GengWiki) -> bool:
+def reload(client: GengWiki, tags=()) -> bool:
     """Read again what replies lean on, so the next reply does not wait for it. False if the wiki could not be reached."""
     client.refresh()
-    for read in (client.persona, client.search_memes, client.trending, client.sticker_packs, client.linked_people):
+    boards = (lambda tag=tag: client.trending(tag) for tag in tags)
+    for read in (client.persona, client.search_memes, client.trending, client.sticker_packs, client.linked_people, client.tags, *boards):
         try:
             read()
         except (ForbiddenError, NotFoundError):
@@ -47,10 +48,12 @@ class GengWikiPlugin(Star):
         options = {"quotes": self.quotes, **frequency}
         self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, **options) for k in keys}
         self.chosen: dict[str, str] = {}
+        self.subscribed: dict[str, list[str]] = {}
         self.last_joined: dict[str, float] = {}
 
     async def initialize(self):
         self.chosen = await self.get_kv_data("chosen", {}) or {}
+        self.subscribed = await self.get_kv_data("subscribed", {}) or {}
 
     def _client(self, event: AstrMessageEvent) -> GengWiki:
         """The key this session picked, or the first one in the config."""
@@ -124,10 +127,65 @@ class GengWikiPlugin(Star):
         else:
             yield event.plain_result(f"{name} 还没有收录语录" if name else "这个 Key 关联的人物还没有语录，发送 /语录 名字 试试")
 
+    @filter.command("梗标签")
+    async def list_tags(self, event: AstrMessageEvent):
+        """列出梗Wiki 的全部标签，括号里是梗的数量"""
+        try:
+            tags = await asyncio.wait_for(asyncio.to_thread(self._client(event).tags), 10)
+        except ForbiddenError:
+            yield event.plain_result("这个 Key 没有勾选 trending:read")
+            return
+        except (GengWikiError, asyncio.TimeoutError):
+            yield event.plain_result("读取失败，请稍后再试")
+            return
+        if tags:
+            yield event.plain_result(f"全部标签，括号里是梗的数量\n{'、'.join(f'{t.name}（{t.count}）' for t in tags)}\n发送 /梗订阅 标签 订阅")
+        else:
+            yield event.plain_result("还没有标签")
+
+    @filter.command("梗订阅")
+    async def subscribe_tag(self, event: AstrMessageEvent, tag: GreedyStr):
+        """订阅标签，当前会话会用上这个标签最热的 5 个梗。不带参数时列出已订阅的标签"""
+        tags = self.subscribed.get(event.unified_msg_origin, [])
+        tag = tag.strip()
+        if not tag:
+            yield event.plain_result(f"已订阅 {'、'.join(tags)}\n发送 /梗退订 标签 退订" if tags else "还没有订阅标签，发送 /梗订阅 标签 订阅")
+            return
+        try:
+            top = await asyncio.wait_for(asyncio.to_thread(self._client(event).trending, tag), 10)
+        except ForbiddenError:
+            yield event.plain_result("这个 Key 没有勾选 trending:read")
+            return
+        except (GengWikiError, asyncio.TimeoutError):
+            yield event.plain_result("读取失败，请稍后再试")
+            return
+        if not top:
+            yield event.plain_result(f"没有带 {tag} 标签的梗，发送 /梗标签 查看全部标签")
+            return
+        # Read again, another /梗订阅 may have finished during that wait
+        tags = self.subscribed.get(event.unified_msg_origin, [])
+        if tag not in tags:
+            self.subscribed[event.unified_msg_origin] = [*tags, tag]
+            await self.put_kv_data("subscribed", self.subscribed)
+        yield event.plain_result(f"已订阅 {tag}，现在最热的是 {'、'.join(m.title for m in top)}")
+
+    @filter.command("梗退订")
+    async def unsubscribe_tag(self, event: AstrMessageEvent, tag: GreedyStr):
+        """退订标签，当前会话不再用这个标签的梗"""
+        tags = self.subscribed.get(event.unified_msg_origin, [])
+        tag = tag.strip()
+        if tag not in tags:
+            yield event.plain_result(f"没有订阅 {tag}，发送 /梗订阅 查看已订阅的标签" if tag else "发送 /梗退订 标签 退订，发送 /梗订阅 查看已订阅的标签")
+            return
+        self.subscribed[event.unified_msg_origin] = [t for t in tags if t != tag]
+        await self.put_kv_data("subscribed", self.subscribed)
+        yield event.plain_result(f"已退订 {tag}")
+
     @filter.command("梗刷新")
     async def refresh_data(self, event: AstrMessageEvent):
         """重新读取梗Wiki 的全部数据，人设、梗、表情和人物的改动马上生效"""
-        reads = (asyncio.to_thread(reload, client) for client in self.clients.values())
+        tags = {tag for tags in self.subscribed.values() for tag in tags}
+        reads = (asyncio.to_thread(reload, client, tags) for client in self.clients.values())
         try:
             done = await asyncio.wait_for(asyncio.gather(*reads), 30)
         except (GengWikiError, asyncio.TimeoutError) as e:
@@ -142,8 +200,9 @@ class GengWikiPlugin(Star):
         client = self._client(event)
         # A join has already decided to speak up with a meme, so that roll must not take the memes away again
         joined = True if event.get_extra("gengwiki_join") else None
+        tags = self.subscribed.get(event.unified_msg_origin, [])
         persona, guide, turn = await asyncio.gather(
-            self._quick(client.persona), self._quick(client.tools.guide, SEND_RULE), self._quick(lambda: client.turn(event.get_message_str(), memes=joined))
+            self._quick(client.persona), self._quick(client.tools.guide, SEND_RULE), self._quick(lambda: client.turn(event.get_message_str(), memes=joined, tags=tags))
         )
         if persona and persona.prompt:
             # AstrBot has added its own persona by now, so this one comes last and says it wins
@@ -168,7 +227,8 @@ class GengWikiPlugin(Star):
         # A message that wakes the bot gets a normal reply anyway
         if event.is_at_or_wake_command or not text or time.time() - self.last_joined.get(origin, 0) < cooldown:
             return
-        named = await self._quick(self._client(event).match_memes, text)
+        tags = self.subscribed.get(origin, [])
+        named = await self._quick(lambda: self._client(event).match_memes(text, tags=tags))
         chance = self.config.get("join_chance_named", 0.5) if named else self.config.get("join_chance_any", 0.02)
         if random.random() >= chance:
             return
@@ -198,7 +258,7 @@ class GengWikiPlugin(Star):
         Args:
             q(string): 梗的关键词、别名、拼音缩写，或者一个场景，比如加班
         """
-        return await self._call(event, "search_memes", q=q)
+        return await self._call(event, "search_memes", q=q, tags=self.subscribed.get(event.unified_msg_origin, []))
 
     @filter.llm_tool(name="get_meme")
     async def get_meme(self, event: AstrMessageEvent, slug: str):
@@ -207,7 +267,7 @@ class GengWikiPlugin(Star):
         Args:
             slug(string): search_memes 返回的 slug，也可以是梗的准确名称
         """
-        return await self._call(event, "get_meme", slug=slug)
+        return await self._call(event, "get_meme", slug=slug, tags=self.subscribed.get(event.unified_msg_origin, []))
 
     @filter.llm_tool(name="trending_memes")
     async def trending_memes(self, event: AstrMessageEvent, tag: str = ""):
