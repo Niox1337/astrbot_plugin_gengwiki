@@ -17,6 +17,12 @@ SKIP = "[不接话]"
 UNREADABLE = "读取失败"
 # The options of quote_mode in _conf_schema.json
 QUOTE_MODES = {"不使用": "off", "引用": "cite", "直接使用": "use", "引用和使用": "both"}
+# The options of meme_frequency in _conf_schema.json
+MEME_FREQUENCIES = {"不主动": "off", "偶尔": "low", "有时": "medium", "经常": "high"}
+# The options of quote_frequency in _conf_schema.json
+QUOTE_FREQUENCIES = {"偶尔": "low", "有时": "medium", "经常": "high"}
+# The options of sticker_frequency in _conf_schema.json
+STICKER_FREQUENCIES = {"不发": "off", "跟随人设": "persona", "偶尔": "low", "有时": "medium", "经常": "high"}
 # AstrBot ends the turn when a tool sends the image itself, and it sends text written alongside a tool call first.
 SEND_RULE = "发送时调用 send_sticker，传入下面的一条说明。要说的话必须写在同一条回复里，和这次调用一起发出，调用之后这一轮就结束了，不能再说话。"
 
@@ -29,7 +35,15 @@ class GengWikiPlugin(Star):
         # A key binds one persona for life, so switching persona means switching key.
         # Hashed so a session keeps its pick when the list is reordered, and the keys stay out of the plugin's database.
         self.quotes = QUOTE_MODES.get(config.get("quote_mode", "引用"), "cite")
-        self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, quotes=self.quotes) for k in keys}
+        self.meme_frequency = MEME_FREQUENCIES.get(config.get("meme_frequency", "偶尔"), "low")
+        self.sticker_frequency = STICKER_FREQUENCIES.get(config.get("sticker_frequency", "跟随人设"), "persona")
+        options = {
+            "quotes": self.quotes,
+            "meme_frequency": self.meme_frequency,
+            "quote_frequency": QUOTE_FREQUENCIES.get(config.get("quote_frequency", "偶尔"), "low"),
+            "sticker_frequency": self.sticker_frequency,
+        }
+        self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, **options) for k in keys}
         self.chosen: dict[str, str] = {}
         self.last_joined: dict[str, float] = {}
 
@@ -127,6 +141,9 @@ class GengWikiPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def join_in(self, event: AstrMessageEvent):
         """Now and then speaks up in a group without being called."""
+        # Speaking up is only ever for a meme, so with none to offer it would just cost a model call
+        if self.meme_frequency == "off":
+            return
         text = event.get_message_str().strip()
         origin = event.unified_msg_origin
         cooldown = self.config.get("join_cooldown", 300)
@@ -208,6 +225,9 @@ class GengWikiPlugin(Star):
         Args:
             caption(string): 表情的说明，照抄提示词里表情列表的一条
         """
+        if self.sticker_frequency == "off":
+            yield "现在不发表情"
+            return
         # The model names a caption and never a link, so a prompt injection cannot make the bot post any URL
         caption = caption.strip()
         found = await self._quick(self._client(event).search_stickers, caption, 1) if caption else None

@@ -2,7 +2,7 @@ name: astrbot_plugin_gengwiki
 display_name: 梗Wiki
 short_desc: 让机器人跟上当下热梗
 desc: 让机器人跟上当下热梗，聊天时自然地玩梗、发表情包，还能随时切换人设。内容来自社区共建的中文热梗百科梗Wiki https://gengwiki.niox.lol
-version: 0.4.0
+version: 0.5.0
 author: Niox1337
 repo: https://github.com/Niox1337/astrbot_plugin_gengwiki
 astrbot_version: ">=4.24,<5"
