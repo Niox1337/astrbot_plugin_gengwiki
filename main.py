@@ -30,7 +30,8 @@ class GengWikiPlugin(Star):
         # Hashed so a session keeps its pick when the list is reordered, and the keys stay out of the plugin's database.
         self.quotes = QUOTE_MODES.get(config.get("quote_mode", "引用"), "cite")
         # The config page takes any number, and the SDK refuses one outside 0 to 1
-        frequency = {name: max(0.0, min(1.0, float(config.get(name, 1.0)))) for name in ("meme_frequency", "quote_frequency", "sticker_frequency")}
+        defaults = {"meme_frequency": 0.2, "quote_frequency": 1.0, "sticker_frequency": 1.0}
+        frequency = {name: max(0.0, min(1.0, float(config.get(name, default)))) for name, default in defaults.items()}
         self.meme_frequency = frequency["meme_frequency"]
         options = {"quotes": self.quotes, **frequency}
         self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, **options) for k in keys}
