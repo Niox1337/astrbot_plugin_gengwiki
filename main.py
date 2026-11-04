@@ -21,6 +21,17 @@ QUOTE_MODES = {"不使用": "off", "引用": "cite", "直接使用": "use", "引
 SEND_RULE = "发送时调用 send_sticker，传入表情列表里的一条说明。要说的话必须写在同一条回复里，和这次调用一起发出，调用之后这一轮就结束了，不能再说话。"
 
 
+def reload(client: GengWiki) -> bool:
+    """Read again what replies lean on, so the next reply does not wait for it. False if the wiki could not be reached."""
+    client.refresh()
+    for read in (client.persona, client.search_memes, client.trending, client.sticker_packs, client.linked_people):
+        try:
+            read()
+        except (ForbiddenError, NotFoundError):
+            pass  # this key was not given that scope
+    return not client.stale
+
+
 class GengWikiPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -112,6 +123,18 @@ class GengWikiPlugin(Star):
             yield event.plain_result(f"{line}\n\n{who}")
         else:
             yield event.plain_result(f"{name} 还没有收录语录" if name else "这个 Key 关联的人物还没有语录，发送 /语录 名字 试试")
+
+    @filter.command("梗刷新")
+    async def refresh_data(self, event: AstrMessageEvent):
+        """重新读取梗Wiki 的全部数据，人设、梗、表情和人物的改动马上生效"""
+        reads = (asyncio.to_thread(reload, client) for client in self.clients.values())
+        try:
+            done = await asyncio.wait_for(asyncio.gather(*reads), 30)
+        except (GengWikiError, asyncio.TimeoutError) as e:
+            logger.warning(f"gengwiki refresh failed: {e!r}")
+            yield event.plain_result("刷新失败，请检查 Key 或稍后再试")
+            return
+        yield event.plain_result("已刷新，现在用的是梗Wiki 最新的数据" if all(done) else "暂时连不上梗Wiki，先继续用旧数据，请稍后再试")
 
     @filter.on_llm_request()
     async def prepare_request(self, event: AstrMessageEvent, req: ProviderRequest):
