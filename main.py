@@ -53,9 +53,11 @@ def reload(client: GengWiki, tags=()) -> bool:
     return not client.stale
 
 
-def describe(status: Status, site: str) -> str:
+def describe(status: Status, site: str, guest: bool = False) -> str:
     """What a key can do, for /梗状态 and the log."""
     lines = [f"人设 {status.persona or '没有'}", f"梗 {status.memes} 个，表情 {status.stickers} 张，人物 {status.people} 个，语录 {status.quotes} 句"]
+    if guest:
+        lines.append(f"没有配置 API Key，只能用热门的 20 个梗和 10 个人物。到 {site}/me 注册账号、新建组合，把 Key 填进插件配置的 api_keys")
     if status.missing:
         lines.append(f"这个 Key 没有勾选 {'、'.join(status.missing)}，到 {site}/me 新建一个勾选它们的 Key")
     if status.stale:
@@ -68,6 +70,8 @@ class GengWikiPlugin(Star):
         super().__init__(context)
         self.config = config
         keys = dict.fromkeys(k.strip() for k in config.get("api_keys", []) if k.strip()) or [""]
+        # No key still works, on the wiki's top 20 hot memes and 10 people
+        self.guest = keys == [""]
         # A key binds one persona for life, so switching persona means switching key.
         # Hashed so a session keeps its pick when the list is reordered, and the keys stay out of the plugin's database.
         self.quotes = QUOTE_MODES.get(config.get("quote_mode", "引用和使用"), "both")
@@ -98,7 +102,7 @@ class GengWikiPlugin(Star):
         for i, client in enumerate(self.clients.values(), 1):
             try:
                 status = await asyncio.to_thread(client.status)
-                logger.info(f"梗Wiki 第 {i} 个 Key，" + describe(status, client.site_url).replace("\n", "，"))
+                logger.info(f"梗Wiki 第 {i} 个 Key，" + describe(status, client.site_url, self.guest).replace("\n", "，"))
                 await asyncio.to_thread(warm, client, tags)
             except Exception as e:  # nothing waits on this task, so a failure here has to end as a log line
                 logger.warning(f"梗Wiki 第 {i} 个 Key 读取失败，请检查插件配置的 api_keys。{getattr(e, 'message', e)!r}")
@@ -291,7 +295,7 @@ class GengWikiPlugin(Star):
         origin = event.unified_msg_origin
         quote_rate = "关" if self.quotes == "off" else client.quote_frequency
         lines = [
-            describe(status, client.site_url),
+            describe(status, client.site_url, self.guest),
             f"频率 玩梗 {client.meme_frequency}，语录 {quote_rate}，表情 {client.sticker_frequency}",
             f"插话 {'开' if self._may_join(origin) else '关'}",
             f"订阅 {'、'.join(self.subscribed.get(origin, [])) or '没有'}",
@@ -375,13 +379,18 @@ class GengWikiPlugin(Star):
         )
         if persona and persona.prompt:
             # AstrBot has added its own persona by now, so this one comes last and says it wins
-            req.system_prompt = f"{req.system_prompt or ''}\n# 梗Wiki 人设\n\n以下人设优先于前面的人设设定。\n\n{persona.prompt}\n"
+            req.system_prompt = f"{req.system_prompt or ''}\n# 人设\n\n以下人设优先于前面的人设设定。\n\n{persona.prompt}\n"
         if guide:
             req.system_prompt = f"{req.system_prompt or ''}\n{guide}\n"
         if joined:
             event.set_extra("gengwiki_join_request", req)
             req.extra_user_content_parts.append(TextPart(text=JOIN_RULE).mark_as_temp())
         if turn:
+            # Only on the first reply without a key, so whoever runs the bot learns where to get one.
+            # getattr until requirements.txt asks for an SDK that has it
+            notice = getattr(turn, "notice", "")
+            if notice:
+                await event.send(event.plain_result(notice))
             event.set_extra("gengwiki_stickers", turn.stickers)
             if turn.prompt:
                 # Changes every turn, so it stays out of the system prompt and the saved history
@@ -450,7 +459,7 @@ class GengWikiPlugin(Star):
 
     @filter.llm_tool(name="search_people")
     async def search_people(self, event: AstrMessageEvent, q: str):
-        """搜索梗Wiki 收录的人物。问到某个人是谁，或者想知道一句话是谁说的时调用。
+        """搜索收录的人物。问到某个人是谁，或者想知道一句话是谁说的时调用。
 
         Args:
             q(string): 名字、别名、标签，或者语录里的词
