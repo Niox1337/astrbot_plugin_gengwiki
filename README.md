@@ -19,7 +19,7 @@
 
 需要 AstrBot 4.24 或更高版本，对话模型要支持工具调用，执行方式要用内置 AstrBot AI。
 
-1. 在 AstrBot 的 WebUI 打开插件页，点右下角的 **+**，选择从 URL 安装，填入 `https://github.com/Niox1337/astrbot_plugin_gengwiki`。
+1. 在 AstrBot 的 WebUI 打开插件广场，搜索梗Wiki 安装，也可以打开[它在插件广场的页面](https://cloud.astrbot.app/plugin/Niox1337/astrbot_plugin_gengwiki)。或者打开插件页，点右下角的 **+**，选择从 URL 安装，填入 `https://github.com/Niox1337/astrbot_plugin_gengwiki`。
 2. 在[梗Wiki 个人中心](https://gengwiki.niox.lol/me)创建 API Key，勾选 `memes:read`、`trending:read`、`persona:read`、`stickers:read` 和 `people:read`，选择人设，并关联要用的梗、表情包和人物。一个 Key 只能绑定一个人设，想用几个人设就创建几个 Key。
 3. 在插件配置的 `api_keys` 里填入 Key。
 
