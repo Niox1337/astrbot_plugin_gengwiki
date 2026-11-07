@@ -6,6 +6,12 @@
     "items": { "type": "string" },
     "secret": true
   },
+  "guest_memes": {
+    "description": "没有 Key 时也玩梗",
+    "hint": "不填 api_keys 时，打开就用梗Wiki 热门的 20 个梗，关掉就完全不玩梗，只在第一次回复时提醒到哪里拿 Key。填了 Key 时这一项无效",
+    "type": "bool",
+    "default": true
+  },
   "quote_mode": {
     "description": "人物语录的用法",
     "hint": "不使用，模型不会用语录，/语录 指令也关闭。引用，照抄原话并说明是谁说的。直接使用，语境合适时整条回复只发一句语录原话，不加其他文字。引用和使用，两种都可以",

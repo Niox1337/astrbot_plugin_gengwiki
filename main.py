@@ -1,11 +1,16 @@
 import asyncio
 import hashlib
+import io
 import random
+import re
 import time
 from urllib.parse import quote
 
+from PIL import Image as Picture
+
 from gengwiki import AuthError, ForbiddenError, GengWiki, GengWikiError, NotFoundError, Status
 
+import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
@@ -33,7 +38,18 @@ HELP = """梗Wiki 指令
 /梗退订 标签  退订标签
 /梗插话 开或关  这个会话要不要主动插话
 /梗状态  看这个 Key 能用什么，哪里没配好
-/梗刷新  马上读取梗Wiki 最新的数据"""
+/梗刷新  马上读取梗Wiki 最新的数据
+/添加梗 词、表情、人设或人物  添加自己的，不用审核
+/删除梗 词、表情、人设或人物 名字  删除自己添加的"""
+ADD_HELP = """添加自己的内容，只有这个 Key 能用，不用审核
+/添加梗 词 名字 解释
+/添加梗 表情 说明  消息里带一张图，或者回复一张图
+/添加梗 人设 名字 提示词
+/添加梗 人物 名字 简介｜语录｜语录"""
+REMOVE_HELP = "/删除梗 词、表情、人设或人物 名字，只能删除自己添加的"
+REMOVE = {"词": "remove_word", "表情": "remove_sticker", "人设": "remove_persona", "人物": "remove_person"}
+# What the wiki takes for a sticker
+STICKER_SIDE, STICKER_BYTES = 500, 1024 * 1024
 
 
 def warm(client: GengWiki, tags=()) -> None:
@@ -51,6 +67,27 @@ def reload(client: GengWiki, tags=()) -> bool:
     client.refresh()
     warm(client, tags)
     return not client.stale
+
+
+def shrink(raw: bytes) -> bytes:
+    """Down to what the wiki takes. An image that already fits is sent as it is, so a GIF keeps moving."""
+    with Picture.open(io.BytesIO(raw)) as im:
+        if im.format in ("PNG", "JPEG", "GIF", "WEBP") and max(im.size) <= STICKER_SIDE and len(raw) <= STICKER_BYTES:
+            return raw
+        im.thumbnail((STICKER_SIDE, STICKER_SIDE))
+        out = io.BytesIO()
+        im.convert("RGBA").save(out, "PNG", optimize=True)
+        if out.tell() > STICKER_BYTES:
+            out = io.BytesIO()
+            im.convert("RGB").save(out, "JPEG", quality=85)
+        return out.getvalue()
+
+
+def picture(event: AstrMessageEvent):
+    """The image in the message, or else in the message it replies to."""
+    chain = event.get_messages()
+    quoted = [c for r in chain if isinstance(r, Comp.Reply) for c in r.chain or []]
+    return next((c for c in [*chain, *quoted] if isinstance(c, Comp.Image)), None)
 
 
 def describe(status: Status, site: str, guest: bool = False) -> str:
@@ -80,7 +117,9 @@ class GengWikiPlugin(Star):
         frequency = {name: max(0.0, min(1.0, float(config.get(name, default)))) for name, default in defaults.items()}
         self.meme_frequency = frequency["meme_frequency"]
         self.sticker_frequency = frequency["sticker_frequency"]
-        options = {"quotes": self.quotes, **frequency}
+        # Off, a bot without a key plays no memes at all and only says once where to get a key
+        self.guest_memes = bool(config.get("guest_memes", True))
+        options = {"quotes": self.quotes, "guest_memes": self.guest_memes, **frequency}
         self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, **options) for k in keys}
         self.chosen: dict[str, str] = {}
         self.subscribed: dict[str, list[str]] = {}
@@ -155,6 +194,8 @@ class GengWikiPlugin(Star):
     def _may_join(self, origin: str) -> bool:
         # Speaking up is only ever for a meme, so with none to offer it would just cost a model call
         chances = self.config.get("join_chance_named", 0.8), self.config.get("join_chance_any", 0.01)
+        if self.guest and not self.guest_memes:
+            return False
         return self.meme_frequency > 0 and any(chance > 0 for chance in chances) and origin not in self.quiet
 
     async def _label(self, client: GengWiki) -> str:
@@ -283,6 +324,71 @@ class GengWikiPlugin(Star):
             yield event.plain_result("这个会话不会主动插话，发送 /梗插话 开 打开")
         else:
             yield event.plain_result("插件配置里关闭了插话，要在配置里打开")
+
+    async def _write(self, client: GengWiki, fn, *args):
+        """For /添加梗 and /删除梗. Returns the answer, and what to say instead when there is none."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn, *args), 15), None
+        except AuthError:
+            if self.guest:
+                return None, f"没有配置 API Key。到 {client.site_url}/me 注册账号、新建组合，把 Key 填进插件配置的 api_keys"
+            return None, "Key 无效，请检查插件配置的 api_keys"
+        except ForbiddenError as e:
+            return None, f"没有成功，{e.message}。Key 要勾选 self:write，旧 Key 到 {client.site_url}/me 新建一个"
+        except asyncio.TimeoutError:
+            return None, "梗Wiki 没有响应，请稍后再试"
+        except GengWikiError as e:
+            logger.warning(f"gengwiki write failed: {e!r}")
+            return None, f"没有成功，{e.message}"
+
+    @filter.command("添加梗")
+    async def add_mine(self, event: AstrMessageEvent, text: GreedyStr):
+        """添加自己的词、表情、人设或人物，只有这个 Key 能用，不用审核"""
+        client = self._client(event)
+        kind, _, rest = text.strip().partition(" ")
+        rest = rest.strip()
+        name, _, more = rest.partition(" ")
+        more = more.strip()
+        if kind == "表情" and rest:
+            found = picture(event)
+            if found is None:
+                yield event.plain_result("消息里带一张图，或者回复一张图，再发 /添加梗 表情 说明")
+                return
+            try:
+                with open(await found.convert_to_file_path(), "rb") as f:
+                    image = await asyncio.to_thread(shrink, f.read())
+            except Exception as e:  # a broken download or a file Pillow cannot read
+                logger.warning(f"gengwiki cannot read the image: {e!r}")
+                yield event.plain_result("读不出这张图片，换一张试试")
+                return
+            _, problem = await self._write(client, client.add_sticker, image, rest)
+            reply = f"已添加表情 {rest}，发送 /表情 {rest} 试试"
+        elif kind == "词" and more:
+            _, problem = await self._write(client, client.add_word, name, more)
+            reply = f"已添加 {name}，以后聊到它机器人就懂了"
+        elif kind == "人设" and more:
+            _, problem = await self._write(client, client.add_persona, name, more)
+            reply = f"已添加人设 {name}。Key 的人设创建后不能改，到 {client.site_url}/me 新建一个组合选它，再把新 Key 填进插件配置"
+        elif kind == "人物" and more:
+            bio, *quotes = re.split("[|｜]", more)
+            _, problem = await self._write(client, client.add_person, name, bio.strip(), [q.strip() for q in quotes if q.strip()])
+            reply = f"已添加人物 {name}，这个 Key 已经关联了"
+        else:
+            yield event.plain_result(ADD_HELP)
+            return
+        yield event.plain_result(problem or reply)
+
+    @filter.command("删除梗")
+    async def remove_mine(self, event: AstrMessageEvent, text: GreedyStr):
+        """删除自己添加的词、表情、人设或人物"""
+        client = self._client(event)
+        kind, _, name = text.strip().partition(" ")
+        name = name.strip()
+        if kind not in REMOVE or not name:
+            yield event.plain_result(REMOVE_HELP)
+            return
+        n, problem = await self._write(client, getattr(client, REMOVE[kind]), name)
+        yield event.plain_result(problem or (f"已删除{kind} {name}" if n else f"没有找到自己添加的{kind} {name}"))
 
     @filter.command("梗状态")
     async def show_status(self, event: AstrMessageEvent):
