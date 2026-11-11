@@ -1,6 +1,6 @@
 # astrbot_plugin_gengwiki
 
-让 [AstrBot](https://docs.astrbot.app/) 机器人用上[梗Wiki](https://gengwiki.niox.lol) 的中文网络热梗和表情包。
+让 [AstrBot](https://docs.astrbot.app/) 机器人用上[梗Wiki](https://gengwiki.com) 的中文网络热梗和表情包。
 
 ## 功能
 
@@ -20,7 +20,7 @@
 需要 AstrBot 4.24 或更高版本，对话模型要支持工具调用，执行方式要用内置 AstrBot AI。
 
 1. 在 AstrBot 的 WebUI 打开插件广场，搜索梗Wiki 安装，也可以打开[它在插件广场的页面](https://cloud.astrbot.app/plugin/Niox1337/astrbot_plugin_gengwiki)。或者打开插件页，点右下角的 **+**，选择从 URL 安装，填入 `https://github.com/Niox1337/astrbot_plugin_gengwiki`。
-2. 在[梗Wiki 个人中心](https://gengwiki.niox.lol/me)创建 API Key，勾选 `memes:read`、`trending:read`、`persona:read`、`stickers:read` 和 `people:read`，选择人设，并关联要用的梗、表情包和人物。一个 Key 只能绑定一个人设，想用几个人设就创建几个 Key。
+2. 在[梗Wiki 个人中心](https://gengwiki.com/me)创建 API Key，勾选 `memes:read`、`trending:read`、`persona:read`、`stickers:read` 和 `people:read`，选择人设，并关联要用的梗、表情包和人物。一个 Key 只能绑定一个人设，想用几个人设就创建几个 Key。
 3. 在插件配置的 `api_keys` 里填入 Key。
 
 每个 AstrBot 用自己的 Key，不要和别人共用。
@@ -109,7 +109,7 @@
 | `/添加梗 人物 名字 简介｜语录｜语录` | 添加一个人物，语录可以不写 |
 | `/删除梗 词 名字` | 删除自己添加的，表情、人设和人物也一样 |
 
-- 添加的内容只有自己的 Key 能用，不公开，也不用审核，在[我的组合](https://gengwiki.niox.lol/me)里能看到和修改。
+- 添加的内容只有自己的 Key 能用，不公开，也不用审核，在[我的组合](https://gengwiki.com/me)里能看到和修改。
 - 会话里的任何人都能用。同名的会更新，不会重复添加。
 - 表情会缩到边长 500 以内，动图已经够小时保持原样。
 - Key 的人设创建后不能改，新的人设要在我的组合新建一个组合选它，再把新 Key 填进 `api_keys`。
