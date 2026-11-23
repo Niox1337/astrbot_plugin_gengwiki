@@ -50,6 +50,8 @@ REMOVE_HELP = "/删除梗 词、表情、人设或人物 名字，只能删除�
 REMOVE = {"词": "remove_word", "表情": "remove_sticker", "人设": "remove_persona", "人物": "remove_person"}
 # What the wiki takes for a sticker
 STICKER_SIDE, STICKER_BYTES = 500, 1024 * 1024
+# Seconds AstrBot's start waits for the first read of every key
+WARM_UP_S = 5
 
 
 def warm(client: GengWiki, tags=()) -> None:
@@ -126,25 +128,44 @@ class GengWikiPlugin(Star):
         self.last_joined: dict[str, float] = {}
         self.quiet: set[str] = set()
         self.last_read = {}
-        self.warming = None
 
     async def initialize(self):
         self.chosen = await self.get_kv_data("chosen", {}) or {}
         self.subscribed = await self.get_kv_data("subscribed", {}) or {}
         self.quiet = set(await self.get_kv_data("quiet", []) or [])
-        # In the background, a slow wiki must not hold up AstrBot's start
-        self.warming = asyncio.create_task(self._warm_up())
+        await self._warm_up()
 
     async def _warm_up(self):
-        """Fills the caches so the first reply does not wait, and says in the log what each key can do. A bad key otherwise only shows as a bot that never jokes."""
+        """Fills the caches so the first reply does not wait, and says in the log what each key can do. A bad key otherwise only shows as a bot that never jokes.
+
+        All keys are read at once and the whole wait is capped at WARM_UP_S, so a slow wiki holds up AstrBot's start by that much at most.
+        A read that runs over keeps going in its thread and still fills the cache.
+        """
         tags = {tag for tags in self.subscribed.values() for tag in tags}
-        for i, client in enumerate(self.clients.values(), 1):
-            try:
-                status = await asyncio.to_thread(client.status)
-                logger.info(f"梗Wiki 第 {i} 个 Key，" + describe(status, client.site_url, self.guest).replace("\n", "，"))
-                await asyncio.to_thread(warm, client, tags)
-            except Exception as e:  # nothing waits on this task, so a failure here has to end as a log line
+        clients = list(self.clients.values())
+        deadline = time.monotonic() + WARM_UP_S
+
+        def within(fn, *args):
+            return asyncio.wait_for(asyncio.to_thread(fn, *args), max(0.0, deadline - time.monotonic()))
+
+        def failed(i: int, e: BaseException) -> None:
+            if isinstance(e, asyncio.TimeoutError):
+                logger.warning(f"梗Wiki 第 {i} 个 Key 没有在 {WARM_UP_S} 秒内读完，先照常启动，回复时再读取")
+            else:
                 logger.warning(f"梗Wiki 第 {i} 个 Key 读取失败，请检查插件配置的 api_keys。{getattr(e, 'message', e)!r}")
+
+        statuses = await asyncio.gather(*(within(client.status) for client in clients), return_exceptions=True)
+        ready = []
+        for i, (client, status) in enumerate(zip(clients, statuses), 1):
+            if isinstance(status, BaseException):
+                failed(i, status)
+            else:
+                logger.info(f"梗Wiki 第 {i} 个 Key，" + describe(status, client.site_url, self.guest).replace("\n", "，"))
+                ready.append((i, client))
+        warmed = await asyncio.gather(*(within(warm, client, tags) for _, client in ready), return_exceptions=True)
+        for (i, _), outcome in zip(ready, warmed):
+            if isinstance(outcome, BaseException):
+                failed(i, outcome)
 
     def _client(self, event: AstrMessageEvent) -> GengWiki:
         """The key this session picked, or the first one in the config."""
@@ -602,7 +623,5 @@ class GengWikiPlugin(Star):
             yield "没有这张表情，从表情列表里选一条说明再试，没有合适的就不发"
 
     async def terminate(self):
-        if self.warming:
-            self.warming.cancel()
         for client in self.clients.values():
             client.close()
