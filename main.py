@@ -121,7 +121,9 @@ class GengWikiPlugin(Star):
         self.sticker_frequency = frequency["sticker_frequency"]
         # Off, a bot without a key plays no memes at all and only says once where to get a key
         self.guest_memes = bool(config.get("guest_memes", True))
-        options = {"quotes": self.quotes, "guest_memes": self.guest_memes, **frequency}
+        # On, each reply sends the user's message to the wiki, which puts the memes and quotes that fit it first
+        semantic = bool(config.get("semantic_pick", False))
+        options = {"quotes": self.quotes, "guest_memes": self.guest_memes, "semantic": semantic, **frequency}
         self.clients = {hashlib.sha256(k.encode()).hexdigest()[:16]: GengWiki(k, **options) for k in keys}
         self.chosen: dict[str, str] = {}
         self.subscribed: dict[str, list[str]] = {}

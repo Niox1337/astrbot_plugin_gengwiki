@@ -1,1 +1,1 @@
-gengwiki>=0.11.0
+gengwiki>=0.12.0

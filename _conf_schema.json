@@ -12,6 +12,12 @@
     "type": "bool",
     "default": true
   },
+  "semantic_pick": {
+    "description": "按意思挑梗和语录",
+    "hint": "打开后每次回复会把用户的这条消息发给梗Wiki，由梗Wiki 挑出意思相近的梗和语录优先给模型，其余照旧随机。需要填 Key。梗Wiki 一时没有回应时照旧随机挑，不影响回复",
+    "type": "bool",
+    "default": false
+  },
   "quote_mode": {
     "description": "人物语录的用法",
     "hint": "不使用，模型不会用语录，/语录 指令也关闭。引用，照抄原话并说明是谁说的。直接使用，语境合适时整条回复只发一句语录原话，不加其他文字。引用和使用，两种都可以",
